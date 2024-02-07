@@ -73,7 +73,7 @@ module dacadedex::dex {
         fee_percent: u64,
         ctx: &mut TxContext
     ) {
-        assert!(fee_percent >= 0 && fee_percent < 10000, E_WRONG_FEE);
+        assert!(fee_percent < 10000, E_WRONG_FEE);
 
         let lsp_supply = balance::create_supply(LSP<X, Y> {});
         transfer::share_object(Pool {
@@ -102,7 +102,7 @@ module dacadedex::dex {
 
         assert!(coin_amount_x > 0 && coin_amount_y > 0, E_ZERO_AMOUNT);
         assert!(coin_amount_x < MAX_POOL_VALUE && coin_amount_y < MAX_POOL_VALUE, E_POOL_FULL);
-        assert!(fee_percent >= 0 && fee_percent < 10000, E_WRONG_FEE);
+        assert!(fee_percent < 10000, E_WRONG_FEE);
 
         // Initial share of LSP is the sqrt(a) * sqrt(b)
         let share = math::sqrt(coin_amount_x) * math::sqrt(coin_amount_y);
