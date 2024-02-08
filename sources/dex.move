@@ -1,170 +1,154 @@
 module dacadedex::dex {
     // === Imports ===
 
-    use sui::object::{Self, UID};
-    use sui::coin::{Self, Coin};
-    use sui::balance::{Self, Supply, Balance};
-    use sui::transfer;
-    use sui::math;
-    use sui::tx_context::{Self, TxContext};
+    use 0x1::Account;
+    use 0x1::Token;
+    use 0x1::Coin;
+    use 0x1::Balance;
+    use 0x1::Transaction;
+    use 0x1::Vector;
+    use 0x1::math::*;
+    use 0x1::tx_context::*;
 
     // === Errors ===
 
-    /// For when supplied Coin is zero.
-    const E_ZERO_AMOUNT: u64 = 0;
+    /// Error code for zero amount supplied.
+    pub const E_ZERO_AMOUNT: u64 = 0;
 
-    /// For when pool fee is set incorrectly.
-    /// Allowed values are: [0-10000).
-    const E_WRONG_FEE: u64 = 1;
+    /// Error code for incorrect fee percentage.
+    pub const E_WRONG_FEE: u64 = 1;
 
-    /// For when someone tries to swap in an empty pool.
-    const E_RESERVES_EMPTY: u64 = 2;
+    /// Error code for attempting to swap in an empty pool.
+    pub const E_RESERVES_EMPTY: u64 = 2;
 
-    /// For when initial LSP amount is zero.
-    const E_SHARE_FULL: u64 = 3;
+    /// Error code for zero initial liquidity.
+    pub const E_SHARE_FULL: u64 = 3;
 
-    /// For when someone attempts to add more liquidity than u128 Math allows.
-    const E_POOL_FULL: u64 = 4;
+    /// Error code for exceeding maximum pool value.
+    pub const E_POOL_FULL: u64 = 4;
 
     // === Constants ===
 
-    /// The integer scaling setting for fees calculation.
+    /// Integer scaling factor for fee calculation.
     const FEE_SCALING: u128 = 10000;
 
-    /// The max value that can be held in one of the Balances of
-    /// a Pool. U64 MAX / FEE_SCALING
-    const MAX_POOL_VALUE: u64 = {
-        18446744073709551615 / 10000
-    };
+    /// Maximum value that can be held in a pool balance.
+    const MAX_POOL_VALUE: u64 = u64::MAX / FEE_SCALING;
 
     // === Structs ===
 
-    /// The Pool token that will be used to mark the pool share
-    /// of a liquidity provider. The first type parameter stands
-    /// for the witness type of a pool. The seconds is for the
-    /// coin held in the pool.
-    struct LSP<phantom X, phantom Y> has drop {}
+    /// Liquidity pool share token.
+    struct LSP;
 
-    /// The pool with exchange.
-    ///
-    /// - `fee_percent` should be in the range: [0-10000), meaning
-    /// that 1000 is 100% and 1 is 0.1%
-    struct Pool<phantom X, phantom Y> has key {
-        id: UID,
-        reserve_x: Balance<X>,
-        reserve_y: Balance<Y>,
-        lsp_supply: Supply<LSP<X, Y>>,
-        /// Fee Percent is denominated in basis points.
-        fee_percent: u64
+    /// Liquidity pool.
+    struct Pool<T> {
+        id: account_address,
+        reserve_x: Balance<T>,
+        reserve_y: Balance<T>,
+        lsp_supply: Balance<LSP>,
+        fee_percent: u64,
     }
-    
-    // === Init Function ===
-
-    fun init(_: &mut TxContext) {}
 
     // === Public-Mutative Functions ===
 
-    /// Create new `Pool` for token `T`. Each Pool holds a `Coin<T>`
-    /// and a `Coin<SUI>`. Swaps are available in both directions.
-    ///
-    /// Share is calculated based on Uniswap's constant product formula:
-    ///  liquidity = sqrt( X * Y )
-    public entry fun create_pool<X, Y>(
+    /// Create a new liquidity pool for token T.
+    public fun create_pool<T>(
         fee_percent: u64,
-        ctx: &mut TxContext
+        ctx: &mut TxContext,
     ) {
-        assert!(fee_percent >= 0 && fee_percent < 10000, E_WRONG_FEE);
+        assert!(fee_percent < 10000, E_WRONG_FEE);
 
-        let lsp_supply = balance::create_supply(LSP<X, Y> {});
-        transfer::share_object(Pool {
-            id: object::new(ctx),
-            reserve_x: balance::zero<X>(),
-            reserve_y: balance::zero<Y>(),
-            lsp_supply,
-            fee_percent
-        });
+        let lsp_supply = Balance<LSP>::new();
+        let pool_id = ctx.get_sender();
+        let pool = Pool {
+            id: pool_id,
+            reserve_x: Balance<T>::new(),
+            reserve_y: Balance<T>::new(),
+            lsp_supply: lsp_supply,
+            fee_percent: fee_percent,
+        };
+
+        // Initialize the pool with sender's account.
+        Account::create_default_account();
+        move_to(pool_id, pool);
     }
 
-    /// Create new `Pool` for token `T`. Each Pool holds a `Coin<T>`
-    /// and a `Coin<SUI>`. Swaps are available in both directions.
-    /// - `coin_x` - the amount of token T to add.
-    /// - `coin_y` - the amount of SUI to add.
-    /// - `fee_percent` - the fee percent to be charged on swaps.
-    /// - `ctx` - the transaction context.
-    public fun create_pool_direct<X, Y>(
-        coin_x: Coin<X>,
-        coin_y: Coin<Y>,
-        fee_percent: u64,
-        ctx: &mut TxContext
-    ): Coin<LSP<X, Y>> {
-        let coin_amount_x = coin::value(&coin_x);
-        let coin_amount_y = coin::value(&coin_y);
-
-        assert!(coin_amount_x > 0 && coin_amount_y > 0, E_ZERO_AMOUNT);
-        assert!(coin_amount_x < MAX_POOL_VALUE && coin_amount_y < MAX_POOL_VALUE, E_POOL_FULL);
-        assert!(fee_percent >= 0 && fee_percent < 10000, E_WRONG_FEE);
-
-        // Initial share of LSP is the sqrt(a) * sqrt(b)
-        let share = math::sqrt(coin_amount_x) * math::sqrt(coin_amount_y);
-        let lsp_supply = balance::create_supply(LSP<X, Y> {});
-        let lsp = balance::increase_supply(&mut lsp_supply, share);
-
-        transfer::share_object(Pool {
-            id: object::new(ctx),
-            reserve_x: coin::into_balance(coin_x),
-            reserve_y: coin::into_balance(coin_y),
-            lsp_supply,
-            fee_percent
-        });
-
-        coin::from_balance(lsp, ctx)
-    }
-
-    /// Swaps token T for SUI.
-    /// - `coin_x` - the amount of token T to swap.
-    /// - `ctx` - the transaction context.
-    /// - Returns the amount of SUI received.
-    /// - The sender of the transaction will receive the SUI.
-    public entry fun swap<X, Y>(pool: &mut Pool<X, Y>, coin_x: Coin<X>, ctx: &mut TxContext) {
-        transfer::public_transfer(
-            swap_x_to_y_direct(pool, coin_x, ctx),
-            tx_context::sender(ctx)
-        );
-    }
-
-    /// Swaps SUI for token T.
-    /// - `coin_y` - the amount of SUI to swap.
-    /// - `ctx` - the transaction context.
-    /// - Returns the amount of token T received.
-    public fun swap_x_to_y_direct<X, Y>(
-        pool: &mut Pool<X, Y>, coin_x: Coin<X>, ctx: &mut TxContext
-    ): Coin<Y> {
-        assert!(coin::value(&coin_x) > 0, E_ZERO_AMOUNT);
-
-        let balance_x = coin::into_balance(coin_x);
-
-        let (reserve_x, reserve_y, _) = get_amounts(pool);
-
+    /// Swap token X for token Y.
+    public fun swap<T>(
+        pool: &mut Pool<T>,
+        token_x: Coin<T>,
+        ctx: &mut TxContext,
+    ) -> Coin<T> {
+        let reserve_x = pool.reserve_x.value();
+        let reserve_y = pool.reserve_y.value();
+        let input_amount = token_x.value();
+        assert!(input_amount > 0, E_ZERO_AMOUNT);
         assert!(reserve_x > 0 && reserve_y > 0, E_RESERVES_EMPTY);
 
-        let output_amount = get_input_price(
-            balance::value(&balance_x),
-            reserve_x,
-            reserve_y,
-            pool.fee_percent
-        );
+        let output_amount = get_output_amount(input_amount, reserve_x, reserve_y, pool.fee_percent);
+        pool.reserve_x += input_amount;
+        pool.reserve_y -= output_amount;
 
-        balance::join(&mut pool.reserve_x, balance_x);
-        coin::take(&mut pool.reserve_y, output_amount, ctx)
+        Coin::<T>::new(output_amount)
+    }
+
+    /// Add liquidity to the pool.
+    public fun add_liquidity<T>(
+        pool: &mut Pool<T>,
+        token_x: Coin<T>,
+        token_y: Coin<T>,
+        ctx: &mut TxContext,
+    ) -> Coin<LSP> {
+        let reserve_x = pool.reserve_x.value();
+        let reserve_y = pool.reserve_y.value();
+        let liquidity_supply = pool.lsp_supply.value();
+        let input_amount_x = token_x.value();
+        let input_amount_y = token_y.value();
+
+        assert!(input_amount_x > 0 && input_amount_y > 0, E_ZERO_AMOUNT);
+        assert!(reserve_x < MAX_POOL_VALUE && reserve_y < MAX_POOL_VALUE, E_POOL_FULL);
+
+        let share = calculate_share(input_amount_x, input_amount_y, reserve_x, reserve_y, liquidity_supply);
+        pool.reserve_x += input_amount_x;
+        pool.reserve_y += input_amount_y;
+        pool.lsp_supply += share;
+
+        Coin::<LSP>::new(share)
+    }
+
+    /// Remove liquidity from the pool.
+    public fun remove_liquidity<T>(
+        pool: &mut Pool<T>,
+        lsp_token: Coin<LSP>,
+        ctx: &mut TxContext,
+    ) -> (Coin<T>, Coin<T>) {
+        let reserve_x = pool.reserve_x.value();
+        let reserve_y = pool.reserve_y.value();
+        let lsp_supply = pool.lsp_supply.value();
+        let lsp_amount = lsp_token.value();
+        assert!(lsp_amount > 0, E_ZERO_AMOUNT);
+
+        let output_amount_x = (reserve_x * lsp_amount) / lsp_supply;
+        let output_amount_y = (reserve_y * lsp_amount) / lsp_supply;
+        pool.reserve_x -= output_amount_x;
+        pool.reserve_y -= output_amount_y;
+        pool.lsp_supply -= lsp_amount;
+
+        (Coin::<T>::new(output_amount_x), Coin::<T>::new(output_amount_y))
     }
 
     // === Public-View Functions ===
-    public fun price_x_to_y<X, Y>(pool: &Pool<X, Y>, delta_y: u64): u64 {
+
+    /// Get the price of token X in terms of token Y.
+    public fun price_x_to_y<T>(
+        pool: &Pool<T>,
+        delta_y: u64,
+    ) -> u64 {
         let (reserve_x, reserve_y, _) = get_amounts(pool);
         get_input_price(delta_y, reserve_y, reserve_x, pool.fee_percent) // Swapped reserve_y and reserve_x
     }
 
-    public fun price_y_to_x<X, Y>(pool: &Pool<X, Y>, delta_x: u64): u64 {
+    public fun price_y_to_x<T>(pool: &Pool<T>, delta_x: u64): u64 {
         let (reserve_x, reserve_y, _) = get_amounts(pool);
         get_input_price(delta_x, reserve_x, reserve_y, pool.fee_percent)
     }
@@ -174,7 +158,7 @@ module dacadedex::dex {
     /// - amount of CoinX
     /// - amount of CoinY
     /// - total supply of LSP
-    public fun get_amounts<X, Y>(pool: &Pool<X, Y>): (u64, u64, u64) {
+    public fun get_amounts<T>(pool: &Pool<T>): (u64, u64, u64) {
         (
             balance::value(&pool.reserve_x),
             balance::value(&pool.reserve_y),
