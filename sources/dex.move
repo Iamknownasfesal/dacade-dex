@@ -67,6 +67,8 @@ module dacadedex::dex {
     /// Create new `Pool` for token `T`. Each Pool holds a `Coin<T>`
     /// and a `Coin<SUI>`. Swaps are available in both directions.
     ///
+    /// - `fee_percent` - The fee percentage to be charged on swaps.
+    /// - `ctx` - The transaction context.
     /// Share is calculated based on Uniswap's constant product formula:
     ///  liquidity = sqrt( X * Y )
     public entry fun create_pool<X, Y>(
@@ -282,7 +284,8 @@ module dacadedex::dex {
     // === Public-View Functions ===
 
     /// Public getter for the price of SUI in token T.
-    /// - How much SUI one will get if they send `to_sell` amount of T;
+    /// - `delta_y` - The amount of SUI to swap.
+    /// Returns the amount of token T received.
     public fun price_x_to_y<X, Y>(pool: &Pool<X, Y>, delta_y: u64): u64
     {
         let (reserve_x, reserve_y, _) = get_amounts(pool);
